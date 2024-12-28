@@ -55,15 +55,50 @@ static int builtin_exit(char **args)
 	return 0;
 }
 
+static char *find_binary(char *command)
+{
+	if (strchr(command, '/'))
+		return strdup(command);
+
+	const int cmdlen = strlen(command);
+	const char *path = getenv("PATH");
+	if (!path)
+		return NULL;
+
+	while (*path) {
+		const char *path_next = strchr(path, ':');
+		int pathlen = path_next ? path_next - path : strlen(path);
+		int len = pathlen + cmdlen + 1;
+		char *binpath = malloc(len + 1);
+		memcpy(binpath, path, pathlen);
+		binpath[pathlen] = '/';
+		memcpy(binpath + pathlen + 1, command, cmdlen);
+		binpath[len] = '\0';
+
+		if (access(binpath, X_OK) == 0)
+			return binpath;
+
+		free(binpath);
+		path = path_next + 1;
+	}
+	return NULL;
+}
+
 static int run_process(char **args)
 {
 	pid_t pid;
 	int status;
 
+	char *binary = find_binary(args[0]);
+	if (!binary) {
+		fprintf(stderr, "%s: command not found\n", args[0]);
+		return 1;
+	}
+
 	pid = fork();
 	if (pid == 0) {
 		// Child process
-		if (execvp(args[0], args) == -1) {
+		if (execv(binary, args) == -1) {
 			perror("lsh");
 		}
 		exit(EXIT_FAILURE);
@@ -76,6 +111,7 @@ static int run_process(char **args)
 			waitpid(pid, &status, WUNTRACED);
 		} while (!WIFEXITED(status) && !WIFSIGNALED(status));
 	}
+	free(binary);
 
 	return 1;
 }
