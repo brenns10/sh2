@@ -1,14 +1,6 @@
-/***************************************************************************/ /**
-
-   @file         main.c
-
-   @author       Stephen Brennan
-
-   @date         Thursday,  8 January 2015
-
-   @brief        LSH (Libstephen SHell)
-
- *******************************************************************************/
+/*
+ * main.c: core of sh2 shell
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,21 +9,16 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/*
-  Function Declarations for builtin shell commands:
- */
-int lsh_cd(char **args);
-int lsh_help(char **args);
-int lsh_exit(char **args);
+static int builtin_cd(char **args);
+static int builtin_help(char **args);
+static int builtin_exit(char **args);
 
-/*
-  List of builtin commands, followed by their corresponding functions.
- */
-char *builtin_str[] = { "cd", "help", "exit" };
+typedef int(command_f)(char **);
 
-int (*builtin_func[])(char **) = { &lsh_cd, &lsh_help, &lsh_exit };
+const char *const builtin_str[] = { "cd", "help", "exit" };
+command_f *const builtin_func[] = { &builtin_cd, &builtin_help, &builtin_exit };
 
-int lsh_num_builtins()
+static int sh2_num_builtins()
 {
 	return sizeof(builtin_str) / sizeof(char *);
 }
@@ -39,13 +26,7 @@ int lsh_num_builtins()
 /*
   Builtin function implementations.
 */
-
-/**
-   @brief Builtin command: change directory.
-   @param args List of args.  args[0] is "cd".  args[1] is the directory.
-   @return Always returns 1, to continue executing.
- */
-int lsh_cd(char **args)
+static int builtin_cd(char **args)
 {
 	if (args[1] == NULL) {
 		fprintf(stderr, "lsh: expected argument to \"cd\"\n");
@@ -57,42 +38,24 @@ int lsh_cd(char **args)
 	return 1;
 }
 
-/**
-   @brief Builtin command: print help.
-   @param args List of args.  Not examined.
-   @return Always returns 1, to continue executing.
- */
-int lsh_help(char **args)
+static int builtin_help(char **args)
 {
 	int i;
-	printf("Stephen Brennan's LSH\n");
-	printf("Type program names and arguments, and hit enter.\n");
-	printf("The following are built in:\n");
+	printf("sh2: a basic shell\n");
+	printf("Built-in commands:\n");
 
-	for (i = 0; i < lsh_num_builtins(); i++) {
+	for (i = 0; i < sh2_num_builtins(); i++) {
 		printf("  %s\n", builtin_str[i]);
 	}
-
-	printf("Use the man command for information on other programs.\n");
 	return 1;
 }
 
-/**
-   @brief Builtin command: exit.
-   @param args List of args.  Not examined.
-   @return Always returns 0, to terminate execution.
- */
-int lsh_exit(char **args)
+static int builtin_exit(char **args)
 {
 	return 0;
 }
 
-/**
-  @brief Launch a program and wait for it to terminate.
-  @param args Null terminated list of arguments (including program).
-  @return Always returns 1, to continue execution.
- */
-int lsh_launch(char **args)
+static int run_process(char **args)
 {
 	pid_t pid;
 	int status;
@@ -117,12 +80,7 @@ int lsh_launch(char **args)
 	return 1;
 }
 
-/**
-   @brief Execute shell built-in or launch program.
-   @param args Null terminated list of arguments.
-   @return 1 if the shell should continue running, 0 if it should terminate
- */
-int lsh_execute(char **args)
+static int run_command(char **args)
 {
 	int i;
 
@@ -131,22 +89,18 @@ int lsh_execute(char **args)
 		return 1;
 	}
 
-	for (i = 0; i < lsh_num_builtins(); i++) {
+	for (i = 0; i < sh2_num_builtins(); i++) {
 		if (strcmp(args[0], builtin_str[i]) == 0) {
 			return (*builtin_func[i])(args);
 		}
 	}
 
-	return lsh_launch(args);
+	return run_process(args);
 }
 
-/**
-   @brief Read a line of input from stdin.
-   @return The line from stdin.
- */
-char *lsh_read_line(void)
+static char *read_line(void)
 {
-#ifdef LSH_USE_STD_GETLINE
+#ifdef SH2_USE_STD_GETLINE
 	char *line = NULL;
 	ssize_t bufsize = 0; // have getline allocate a buffer for us
 	if (getline(&line, &bufsize, stdin) == -1) {
@@ -159,8 +113,8 @@ char *lsh_read_line(void)
 	}
 	return line;
 #else
-#define LSH_RL_BUFSIZE 1024
-	int bufsize = LSH_RL_BUFSIZE;
+#define SH2_RL_BUFSIZE 1024
+	int bufsize = SH2_RL_BUFSIZE;
 	int position = 0;
 	char *buffer = malloc(sizeof(char) * bufsize);
 	int c;
@@ -186,7 +140,7 @@ char *lsh_read_line(void)
 
 		// If we have exceeded the buffer, reallocate.
 		if (position >= bufsize) {
-			bufsize += LSH_RL_BUFSIZE;
+			bufsize += SH2_RL_BUFSIZE;
 			buffer = realloc(buffer, bufsize);
 			if (!buffer) {
 				fprintf(stderr, "lsh: allocation error\n");
@@ -197,16 +151,12 @@ char *lsh_read_line(void)
 #endif
 }
 
-#define LSH_TOK_BUFSIZE 64
-#define LSH_TOK_DELIM   " \t\r\n\a"
-/**
-   @brief Split a line into tokens (very naively).
-   @param line The line.
-   @return Null-terminated array of tokens.
- */
-char **lsh_split_line(char *line)
+#define SH2_TOK_BUFSIZE 64
+#define SH2_TOK_DELIM   " \t\r\n\a"
+
+static char **split_line(char *line)
 {
-	int bufsize = LSH_TOK_BUFSIZE, position = 0;
+	int bufsize = SH2_TOK_BUFSIZE, position = 0;
 	char **tokens = malloc(bufsize * sizeof(char *));
 	char *token, **tokens_backup;
 
@@ -215,13 +165,13 @@ char **lsh_split_line(char *line)
 		exit(EXIT_FAILURE);
 	}
 
-	token = strtok(line, LSH_TOK_DELIM);
+	token = strtok(line, SH2_TOK_DELIM);
 	while (token != NULL) {
 		tokens[position] = token;
 		position++;
 
 		if (position >= bufsize) {
-			bufsize += LSH_TOK_BUFSIZE;
+			bufsize += SH2_TOK_BUFSIZE;
 			tokens_backup = tokens;
 			tokens = realloc(tokens, bufsize * sizeof(char *));
 			if (!tokens) {
@@ -231,16 +181,13 @@ char **lsh_split_line(char *line)
 			}
 		}
 
-		token = strtok(NULL, LSH_TOK_DELIM);
+		token = strtok(NULL, SH2_TOK_DELIM);
 	}
 	tokens[position] = NULL;
 	return tokens;
 }
 
-/**
-   @brief Loop getting input and executing it.
- */
-void lsh_loop(void)
+int main(int argc, char **argv)
 {
 	char *line;
 	char **args;
@@ -248,29 +195,13 @@ void lsh_loop(void)
 
 	do {
 		printf("> ");
-		line = lsh_read_line();
-		args = lsh_split_line(line);
-		status = lsh_execute(args);
+		line = read_line();
+		args = split_line(line);
+		status = run_command(args);
 
 		free(line);
 		free(args);
 	} while (status);
-}
-
-/**
-   @brief Main entry point.
-   @param argc Argument count.
-   @param argv Argument vector.
-   @return status code
- */
-int main(int argc, char **argv)
-{
-	// Load config files, if any.
-
-	// Run command loop.
-	lsh_loop();
-
-	// Perform any shutdown/cleanup.
 
 	return EXIT_SUCCESS;
 }
