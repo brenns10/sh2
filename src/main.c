@@ -65,9 +65,15 @@ static char *find_binary(char *command)
 	if (!path)
 		return NULL;
 
-	while (*path) {
+	while (path) {
 		const char *path_next = strchr(path, ':');
-		int pathlen = path_next ? path_next - path : strlen(path);
+		int pathlen;
+		if (path_next) {
+			pathlen = path_next - path;
+			path_next++;
+		} else {
+			pathlen = strlen(path);
+		}
 		int len = pathlen + cmdlen + 1;
 		char *binpath = malloc(len + 1);
 		memcpy(binpath, path, pathlen);
@@ -79,7 +85,7 @@ static char *find_binary(char *command)
 			return binpath;
 
 		free(binpath);
-		path = path_next + 1;
+		path = path_next;
 	}
 	return NULL;
 }
