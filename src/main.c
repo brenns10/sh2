@@ -2,6 +2,8 @@
  * main.c: core of sh2 shell
  */
 
+#include <assert.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -149,49 +151,140 @@ static char *read_line(void)
 
 	while (1) {
 		int c = getchar();
-
-		if (c == EOF) {
+		if (c == EOF)
 			exit(EXIT_SUCCESS);
-		} else if (c == '\n') {
+		sc_cb_append(&cb, (char) c);
+		if (c == '\n') {
 			sc_cb_trim(&cb);
 			return cb.buf;
-		} else {
-			sc_cb_append(&cb, (char) c);
 		}
 	}
 }
 
-#define SH2_TOK_DELIM   " \t\r\n\a"
-
-static char **split_line(char *line)
-{
+struct lexer {
 	struct sc_array arr;
-	sc_arr_init(&arr, char *, 16);
-	char *token;
+	struct sc_charbuf tok;
+	enum {
+		START,
+		UNQUOTED,
+		UNQUOTED_ESCAPE,
+		SINGLEQ,
+		DOUBLEQ,
+		DOUBLEQ_ESCAPE,
+	} state;
+};
 
-	token = strtok(line, SH2_TOK_DELIM);
-	while (token != NULL) {
-		sc_arr_append(&arr, char *, token);
-		token = strtok(NULL, SH2_TOK_DELIM);
+static void lexer_init(struct lexer *lex)
+{
+	sc_arr_init(&lex->arr, char *, 16);
+	sc_cb_init(&lex->tok, 32);
+	lex->state = START;
+}
+
+static void lexer_emit(struct lexer *lex)
+{
+	sc_cb_trim(&lex->tok);
+	sc_arr_append(&lex->arr, char *, lex->tok.buf);
+	sc_cb_init(&lex->tok, 32);
+}
+
+static bool split_line(struct lexer *lex, char *line)
+{
+	/* Line continuation via backslash */
+	if (lex->arr.len) {
+		if (lex->state == UNQUOTED_ESCAPE)
+			lex->state = UNQUOTED;
+		else if (lex->state == DOUBLEQ_ESCAPE)
+			lex->state = DOUBLEQ;
 	}
-	sc_arr_append(&arr, char *, NULL);
-	return arr.arr;
+	for (int i = 0; line[i]; i++) {
+		switch (lex->state) {
+		case START:
+		case UNQUOTED:
+			if (line[i] == '\'') {
+				lex->state = SINGLEQ;
+			} else if (line[i] == '"') {
+				lex->state = DOUBLEQ;
+			} else if (line[i] == '\\') {
+				lex->state = UNQUOTED_ESCAPE;
+			} else if (isspace(line[i])) {
+				if (lex->state == UNQUOTED)
+					lexer_emit(lex);
+				lex->state = START;
+			} else {
+				sc_cb_append(&lex->tok, line[i]);
+				lex->state = UNQUOTED;
+			}
+			break;
+		case UNQUOTED_ESCAPE:
+			sc_cb_append(&lex->tok, line[i]);
+			lex->state = UNQUOTED;
+			break;
+		case SINGLEQ:
+			if (line[i] == '\'')
+				lex->state = UNQUOTED;
+			else
+				sc_cb_append(&lex->tok, line[i]);
+			break;
+		case DOUBLEQ:
+			if (line[i] == '"')
+				lex->state = UNQUOTED;
+			else if (line[i] == '\\')
+				lex->state = DOUBLEQ_ESCAPE;
+			else
+				sc_cb_append(&lex->tok, line[i]);
+			break;
+		case DOUBLEQ_ESCAPE:
+			sc_cb_append(&lex->tok, line[i]);
+			lex->state = DOUBLEQ;
+			break;
+		}
+	}
+	assert(lex->state != UNQUOTED);
+	return !(lex->state == UNQUOTED || lex->state == START);
+}
+
+static void lexer_destroy(struct lexer *lex)
+{
+	sc_arr_destroy(&lex->arr);
+	sc_cb_destroy(&lex->tok);
+}
+
+static char **get_args()
+{
+	struct lexer lex;
+	lexer_init(&lex);
+	bool again = false;
+	do {
+		printf("%c ", again ? '>' : '$');
+		char *line = read_line();
+		again = split_line(&lex, line);
+		free(line);
+	} while (again || !lex.arr.len);
+
+	char **value = lex.arr.arr;
+	lex.arr.arr = NULL;
+	lexer_destroy(&lex);
+	return value;
+}
+
+static void free_args(char **args)
+{
+	for (int i = 0; args[i]; i++) {
+		free(args[i]);
+	}
+	free(args);
 }
 
 int main(int argc, char **argv)
 {
-	char *line;
 	char **args;
 	int status;
 
 	do {
-		printf("> ");
-		line = read_line();
-		args = split_line(line);
+		args = get_args();
 		status = run_command(args);
-
-		free(line);
-		free(args);
+		free_args(args);
 	} while (status);
 
 	return EXIT_SUCCESS;
